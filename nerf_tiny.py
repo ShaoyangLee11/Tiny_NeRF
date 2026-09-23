@@ -52,33 +52,34 @@ alpha表示物体的透明度,亦可用于透过率
 """
 def exclusive_cumprod(tensor:torch.Tensor):
     tensor=torch.cumprod(tensor,dim=-1)
-    tensor1=torch.roll(tensor,shift=1,dims=-1)
+    tensor1=torch.roll(tensor,shifts=1,dims=-1)
     tensor1[...,0]=1.0
     return tensor1
 
 def render_ray(ffn:NeRF,near,far,N_samples,dir_w,ray_o):
 
     assert far>near,"Wrong order of arg far and arg near! "
-    assert (far-near)%N_samples==0,"U need to select correct args"
-
+    
     # (N_samples,)
     z_vals=torch.linspace(near,far,N_samples).to(device)
-    # (H,W,1,3)*(N_samples,)-->(H,W,N_samples,3)
-    points=ray_o+dir_w[...,None,:]*z_vals
+    # (H,W,1,3)*(N_samples,1)-->(H,W,N_samples,3)
+    points=ray_o[...,None,:]+dir_w[...,None,:]*z_vals[...,None]
 
+    h,w,n,_=points.shape
     # (H,W,N_samples,3)-->(-1,3)
-    points_flt=points[-1,3]
+    points_flt=points.reshape(-1,3)
+    points_pe=posenc(points_flt)
     # (-1,3)-->(-1,4)
-    raw_data=batchify(ffn)(points_flt)
+    raw_data=batchify(ffn)(points_pe)
     # (-1,4)-->(H,W,N_samples,4)
-    raw_data=raw_data.reshape([*dir_w[:3],4])
+    raw_data=raw_data.reshape([h,w,n,4])
 
     # (H,W,N_samples,3)
     rgb=F.sigmoid(raw_data[...,:3])
     # (H,W,N_samples,1)-->(H,W,N_samples)
     sigma=F.relu(raw_data[...,3])
 
-    # (N_samples,)
+    # (N_samples,1)
     dists = torch.cat([z_vals[..., 1:] - z_vals[..., :-1], torch.tensor([1e10], device=device).expand(z_vals[..., :1].shape)], dim=-1)
     # (H,W,N_samples)
     alpha = 1.0 - torch.exp(-sigma * dists)
@@ -131,8 +132,8 @@ def train(params:HyperParams,data_filename:str):
     # (row,column)
     val_pose=poses[105,...]
 
-    train_imgs=imgs[:105,...]
-    train_poses=poses[:105,...]
+    train_imgs=imgs[:100,...]
+    train_poses=poses[:100,...]
 
     psnrs = []
     iternums = []
@@ -153,39 +154,40 @@ def train(params:HyperParams,data_filename:str):
 
         H,W,_=input_img.shape
         dir_w,ray_o=get_rays(H,W,focal.item(),input_pose)
-        rgb_pred,depth_pred,acc_pred=render_ray(model,2,6,params.N_samples,dir_w,ray_o)
+        rgb_pred,_,_=render_ray(model,2.0,6.0,params.N_samples,dir_w,ray_o)
 
         loss=F.mse_loss(rgb_pred,input_img)
-        loss.backward()
         optimizor.zero_grad()
+        loss.backward()
+        
         optimizor.step()
         scheduler.step()
 
-    if params.plot_img:
-        if i % 100 == 0:
-            with torch.no_grad():
-                dir_w_pred,ray_o_pred=get_rays(H,W,focal.item(),val_pose)
-                rgb,depth,acc=render_ray(model,2,6,params.N_samples,dir_w_pred,ray_o)
-                psnr = -10.0 * torch.log10(loss)
-                
-                psnrs.append(psnr.item())
-                iternums.append(i)
+        if params.plot_img:
+            if i % 100 == 0:
+                with torch.no_grad():
+                    dir_w_pred,ray_o_pred=get_rays(H,W,focal.item(),val_pose)
+                    rgb,depth,_=render_ray(model,2.0,6.0,params.N_samples,dir_w_pred,ray_o_pred)
+                    psnr = -10.0 * torch.log10(loss)
+                    
+                    psnrs.append(psnr.item())
+                    iternums.append(i)
 
-                plt.figure(figsize=(12, 4))
-                plt.subplot(131)
-                plt.imshow(rgb.cpu().detach().numpy())
-                plt.title(f"Iteration {i}")
-                plt.subplot(132)
-                plt.plot(iternums, psnrs)
-                plt.title("PSNR")
-                plt.subplot(133)
-                plt.imshow(depth.cpu().detach().numpy(), cmap="gray")
-                plt.title("Depth Map")
+                    plt.figure(figsize=(12, 4))
+                    plt.subplot(131)
+                    plt.imshow(rgb.cpu().detach().numpy())
+                    plt.title(f"Iteration {i}")
+                    plt.subplot(132)
+                    plt.plot(iternums, psnrs)
+                    plt.title("PSNR")
+                    plt.subplot(133)
+                    plt.imshow(depth.cpu().detach().numpy(), cmap="gray")
+                    plt.title("Depth Map")
 
-                # Auto close
-                plt.show(block=False)
-                plt.pause(1)
-                plt.close()
+                    # Auto close
+                    plt.show(block=False)
+                    plt.pause(1)
+                    plt.close()
 
     print("All Fine")
 
