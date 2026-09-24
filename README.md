@@ -7,5 +7,4 @@ This is an implementation of tiny nerf
 torch==2.0.1
 numpy
 imageio
-
 ```
